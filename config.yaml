@@ -1,0 +1,16 @@
+simulator:
+  frequency_seconds: 30
+  concurrent_routes: 1
+
+osrm:
+  base_url: "https://router.project-osrm.org"
+
+routes:
+  - vehicle_id: "veh-0001"
+    imei: ""
+    source: "12.934853743726048,80.12598451188441"   # Bangalore
+    target: "12.963377700364212, 80.14735635315704"   # Chennai
+  - vehicle_id: "veh-0002"
+    imei: ""
+    source: "28.6139,77.2090"   # Delhi
+    target: "26.9124,75.7873"   # Jaipur
