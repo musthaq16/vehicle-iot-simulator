@@ -1,5 +1,5 @@
 simulator:
-  frequency_seconds: 30
+  frequency_seconds: 10
   concurrent_routes: 1
   client: "localhost:8994"
 

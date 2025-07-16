@@ -5,12 +5,15 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"time"
 
 	"github.com/musthaq16/vehicle-iot-simulator/internal/config"
 	"github.com/musthaq16/vehicle-iot-simulator/internal/osrm"
+	"github.com/musthaq16/vehicle-iot-simulator/types"
 )
+
 
 // RunVehicleSimulator simulates a single vehicle sending coordinates
 func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSec int, address string) {
@@ -55,6 +58,10 @@ func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSe
 		return
 	}
 
+	state := types.VehicleState{
+		CurrentSpeed: 0.0,
+	}
+
 	log.Printf("[%s] Starting route with %d points", routeCfg.VehicleID, len(points))
 	fmt.Println()
 	// 4. Process route points with position packets
@@ -63,10 +70,35 @@ func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSe
 	// Simulate GPS emission every intervalSec seconds
 	for i, pt := range points {
 
+		// Calculate realistic speed
+		if i > 0 {
+			// Calculate distance in meters
+			distance := haversineDistance(state.LastLat, state.LastLon, pt.Lat, pt.Lon) * 1000
+
+			// Calculate speed in km/h (distance / time * 3.6)
+			requiredSpeed := (distance / float64(intervalSec)) * 3.6
+			fmt.Println("req speed", requiredSpeed)
+
+			state.Odometer += distance
+
+			// Generate random speed between 0 and requiredSpeed
+			// randomSpeed := rand.Float64() * requiredSpeed
+
+			// state.CurrentSpeed = randomSpeed + 1
+			state.CurrentSpeed = requiredSpeed
+
+			log.Printf("[%s] Speed: %.1f km/h (Distance: %.2f m, Interval: %ds)",
+				routeCfg.VehicleID, state.CurrentSpeed, distance, intervalSec)
+		}
+
+		// Update state
+		state.LastLat = pt.Lat
+		state.LastLon = pt.Lon
+
 		log.Printf("[%s] Point %d: %.6f, %.6f", routeCfg.VehicleID, i+1, pt.Lat, pt.Lon)
 		fmt.Println()
 		// Generate position packet with current timestamp and coordinates
-		positionPacketHex, err := generatePacket(PacketTemplate, pt.Lat, pt.Lon)
+		positionPacketHex, err := generatePacket(PacketTemplate, pt.Lat, pt.Lon, state.CurrentSpeed, state.Odometer)
 		if err != nil {
 			log.Printf("[%s] Position packet generation failed: %v", routeCfg.VehicleID, err)
 			continue
@@ -84,7 +116,7 @@ func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSe
 			log.Printf("[%s] Position packet send failed: %v", routeCfg.VehicleID, err)
 			continue
 		}
-		fmt.Println("the packet is", string(positionPacketHex))
+		// fmt.Println("the packet is", string(positionPacketHex))
 		time.Sleep(time.Duration(intervalSec) * time.Second)
 	}
 
@@ -113,7 +145,7 @@ func createLoginPacket(imei string) ([]byte, error) {
 
 	return packet, nil
 }
-func generatePacket(template string, lat, lon float64) (string, error) {
+func generatePacket(template string, lat, lon, speed, odometer float64) (string, error) {
 	// Decode the template packet
 	packet, err := hex.DecodeString(template)
 	if err != nil {
@@ -137,10 +169,21 @@ func generatePacket(template string, lat, lon float64) (string, error) {
 
 	fmt.Printf("Latitude: %.6f → %d → %X\n", lat, latInt, latBytes)
 	fmt.Printf("Longitude: %.6f → %d → %X\n", lon, lonInt, lonBytes)
+	speedInt := uint16(speed) // Max 30.0 km/h
+	speedBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(speedBytes, speedInt)
+	fmt.Printf("speed: %d → %X\n", speedInt, speedBytes)
+
+	odometerInt := uint32(odometer)
+	odometerBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(odometerBytes, odometerInt)
+	fmt.Printf("Odometer: %.2f m → %d → %X (4 bytes)\n", odometer, odometerInt, odometerBytes)
 
 	// Inject coordinates
 	binary.BigEndian.PutUint32(packet[19:23], uint32(lonInt)) // Longitude
 	binary.BigEndian.PutUint32(packet[23:27], uint32(latInt)) // Latitude
+	binary.BigEndian.PutUint16(packet[32:34], speedInt)       // Speed
+	binary.BigEndian.PutUint32(packet[151:155], odometerInt)  // Odometer
 
 	// Calculate CRC-16 (bytes 8 to len-4)
 	crc := crc16IBM(packet[8 : len(packet)-4])
@@ -151,6 +194,8 @@ func generatePacket(template string, lat, lon float64) (string, error) {
 
 	// Replace last 4 bytes with CRC
 	copy(packet[len(packet)-4:], crcBytes)
+
+	fmt.Println("hex packet: ", hex.EncodeToString(packet))
 
 	// Convert back to hex string
 	return hex.EncodeToString(packet), nil
@@ -172,6 +217,18 @@ func crc16IBM(data []byte) uint16 {
 		}
 	}
 	return crc
+}
+
+// Haversine distance calculation (in kilometers)
+func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
+	const R = 6371 // Earth radius in km
+	dLat := (lat2 - lat1) * math.Pi / 180
+	dLon := (lon2 - lon1) * math.Pi / 180
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*math.Pi/180)*math.Cos(lat2*math.Pi/180)*
+			math.Sin(dLon/2)*math.Sin(dLon/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return R * c
 }
 
 // 10:18

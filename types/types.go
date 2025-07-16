@@ -1,12 +1,11 @@
 package types
 
-import "time"
-
 // Add this struct to track previous point data
-type vehicleState struct {
-	lastLat  float64
-	lastLon  float64
-	lastTime time.Time
+type VehicleState struct {
+	LastLat      float64
+	LastLon      float64
+	CurrentSpeed float64 // km/h
+	Odometer     float64  // meters (cumulative distance)
 }
 
 // Coordinate holds lat/lon
