@@ -23,8 +23,9 @@ type RouteConfig struct {
 
 // SimulatorConfig contains frequency and concurrency
 type SimulatorConfig struct {
-	FrequencySeconds int `mapstructure:"frequency_seconds"`
-	ConcurrentRoutes int `mapstructure:"concurrent_routes"`
+	FrequencySeconds int    `mapstructure:"frequency_seconds"`
+	ConcurrentRoutes int    `mapstructure:"concurrent_routes"`
+	Client           string `mapstructure:"client"`
 }
 
 type BaseUrlConfig struct {

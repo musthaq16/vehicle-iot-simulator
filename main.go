@@ -23,6 +23,29 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	/* // Get current time
+	now := time.Now().UTC()
+
+	// Convert to epoch milliseconds
+	epochMillis := now.UnixNano() / int64(time.Millisecond)
+
+	// Convert to big-endian binary
+	buf := new(bytes.Buffer)
+	if err := binary.Write(buf, binary.BigEndian, uint64(epochMillis)); err != nil {
+		fmt.Println("Error writing binary:", err)
+		return
+	}
+
+	// Convert binary to hex string
+	hexStr := hex.EncodeToString(buf.Bytes())
+
+	// Output
+	fmt.Println("Current Time        :", now.Format(time.RFC3339Nano))
+	fmt.Println("Epoch (ms)          :", epochMillis)
+	fmt.Println("Big-endian Hex      :", hexStr)
+
+	return */
+
 	manager := &routeManager{
 		activeRoutes: make(map[string]struct{}),
 		stopChan:     make(chan struct{}),
@@ -55,7 +78,7 @@ func (rm *routeManager) startRoutes(cfg *config.AppConfig) {
 					delete(rm.activeRoutes, r.VehicleID)
 					rm.mu.Unlock()
 				}()
-				simulator.RunVehicleSimulator(cfg.OSRM.BaseUrl, r, cfg.Simulator.FrequencySeconds)
+				simulator.RunVehicleSimulator(cfg.OSRM.BaseUrl, r, cfg.Simulator.FrequencySeconds, cfg.Simulator.Client)
 			}(route)
 		}
 	}
