@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/musthaq16/vehicle-iot-simulator/internal/config"
@@ -61,12 +66,45 @@ func main() {
 	manager.wg.Wait()
 }
 
+// startRoutes starts all configured routes as goroutines
 func (rm *routeManager) startRoutes(cfg *config.AppConfig) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
+	// Create a context that can be cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+	// Do not defer cancel here; cancel when signal received or routes complete
+
+	// Channel to catch interrupt signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Channel to signal completion
+	done := make(chan struct{})
+
+	// Goroutine to handle shutdown
+	go func() {
+		sig := <-sigChan
+		log.Printf("Received signal: %v, cancelling simulations...", sig)
+		cancel() // Cancel the context to stop all simulations
+
+		// Wait for goroutines with timeout
+		waitChan := make(chan struct{})
+		go func() {
+			rm.wg.Wait()
+			close(waitChan)
+		}()
+
+		select {
+		case <-waitChan:
+			log.Println("All routes stopped, states saved")
+		case <-time.After(5 * time.Second):
+			log.Println("Timeout waiting for routes to stop, forcing exit")
+		}
+		close(done)
+	}()
+
 	for _, route := range cfg.Routes {
-		// Check if route is already running
 		if _, exists := rm.activeRoutes[route.VehicleID]; !exists {
 			rm.activeRoutes[route.VehicleID] = struct{}{}
 			rm.wg.Add(1)
@@ -75,12 +113,23 @@ func (rm *routeManager) startRoutes(cfg *config.AppConfig) {
 				defer rm.wg.Done()
 				defer func() {
 					rm.mu.Lock()
+					fmt.Println("removedddd", rm.activeRoutes, r.VehicleID)
 					delete(rm.activeRoutes, r.VehicleID)
 					rm.mu.Unlock()
 				}()
-				simulator.RunVehicleSimulator(cfg.OSRM.BaseUrl, r, cfg.Simulator.FrequencySeconds, cfg.Simulator.Client)
+				simulator.RunVehicleSimulator(ctx, cfg.OSRM.BaseUrl, r, cfg.Simulator.FrequencySeconds, cfg.Simulator.Client)
 			}(route)
 		}
+	}
+
+	// Wait for either all routes to complete or a signal
+	log.Println("Started all routes, waiting for completion or signal...")
+	select {
+	case <-done:
+		log.Println("Exiting due to signal or completion")
+	case <-ctx.Done():
+		log.Println("Context cancelled externally, waiting for routes to stop...")
+		rm.wg.Wait()
 	}
 }
 

@@ -1,31 +1,115 @@
 package simulator
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"log"
 	"math"
 	"net"
+	"os"
 	"time"
 
 	"github.com/musthaq16/vehicle-iot-simulator/internal/config"
 	"github.com/musthaq16/vehicle-iot-simulator/internal/osrm"
+	"github.com/musthaq16/vehicle-iot-simulator/internal/progress"
 	"github.com/musthaq16/vehicle-iot-simulator/types"
 )
 
-// RunVehicleSimulator simulates a single vehicle sending coordinates
-func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSec int, address string) {
+const maxSpeed = 120
 
-	// 1. Establish TCP connection
-	conn, err := net.Dial("tcp", address) // Replace with your server details
+// RunVehicleSimulator simulates a single vehicle sending coordinates
+func RunVehicleSimulator(ctx context.Context, baseURL string, routeCfg config.RouteConfig, intervalSec int, address string) {
+
+	// Wrap the context with signal handler
+	ctx = progress.WithSignalHandler(ctx)
+
+	// Check context at start
+	if ctx.Err() != nil {
+		log.Printf("[%s] Context already cancelled at start: %v", routeCfg.VehicleID, ctx.Err())
+		return
+	}
+	log.Printf("[%s] Starting simulation with context: %v", routeCfg.VehicleID, ctx)
+
+	// Load existing state or initialize new one
+	state := types.VehicleState{
+		CurrentSpeed: 0.0,
+	}
+	var odometer float64
+	var startIndex int
+
+	// Try to load previous state
+	vehicleState, err := progress.GetVehicleState(routeCfg.VehicleID)
+	if err == nil && vehicleState != nil {
+		log.Printf("[%s] Loaded state: Source=%s, Target=%s, LastLat=%.6f, LastLon=%.6f, Odometer=%.2f, LastIndex=%d",
+			routeCfg.VehicleID, vehicleState.Source, vehicleState.Target, vehicleState.LastLat, vehicleState.LastLon, vehicleState.Odometer, vehicleState.LastIndex)
+		// Check if source and destination match
+		src, _ := osrm.ParseCoord(routeCfg.Source)
+		if routeCfg.Source == vehicleState.Source && routeCfg.Target == vehicleState.Target {
+			fmt.Println("both are sameeee")
+			// Continue from saved state
+			state.LastLat = vehicleState.LastLat
+			state.LastLon = vehicleState.LastLon
+			odometer = vehicleState.Odometer
+			startIndex = vehicleState.LastIndex
+		} else {
+			fmt.Println("both are different")
+			// Reset coordinates to new source, retain odometer
+			state.LastLat = src.Lat
+			state.LastLon = src.Lon
+			odometer = vehicleState.Odometer
+			startIndex = 0
+			log.Printf("[%s] Source/Target changed, resetting to Source=%.6f,%.6f, retaining Odometer=%.2f",
+				routeCfg.VehicleID, state.LastLat, state.LastLon, odometer)
+		}
+	} else {
+		fmt.Println("not exist")
+		// Initialize with source coordinates
+		src, err := osrm.ParseCoord(routeCfg.Source)
+		if err != nil {
+			log.Printf("[%s] Invalid source: %v", routeCfg.VehicleID, err)
+			return
+		}
+		state.LastLat = src.Lat
+		state.LastLon = src.Lon
+		log.Printf("[%s] No previous state, starting from Source=%.6f,%.6f", routeCfg.VehicleID, state.LastLat, state.LastLon)
+	}
+	state.Odometer = odometer
+
+	// Save state on exit (graceful, error, or cancelled)
+	defer func() {
+		if err := progress.SaveVehicleState(routeCfg.VehicleID, &types.VehicleProgress{
+			Source: routeCfg.Source,
+			Target: routeCfg.Target,
+
+			LastLat:   state.LastLat,
+			LastLon:   state.LastLon,
+			Odometer:  state.Odometer,
+			LastIndex: startIndex,
+		}); err != nil {
+			log.Printf("[%s] Failed to save state on exit: %v", routeCfg.VehicleID, err)
+		} else {
+			log.Printf("[%s] State saved: LastLat=%.6f, LastLon=%.6f, Odometer=%.2f, LastIndex=%d",
+				routeCfg.VehicleID, state.LastLat, state.LastLon, state.Odometer, startIndex)
+			os.Exit(1)
+		}
+	}()
+
+	// Establish TCP connection with timeout
+	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
 	if err != nil {
 		log.Printf("[%s] TCP connection failed: %v", routeCfg.VehicleID, err)
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		fmt.Println("closing tcppp")
+		if err := conn.Close(); err != nil {
+			log.Printf("[%s] Failed to close TCP connection: %v", routeCfg.VehicleID, err)
+		}
+	}()
 
-	// 2. Prepare and send login packet with IMEI
+	// Send login packet with IMEI
 	loginPacket, err := createLoginPacket(routeCfg.Imei)
 	if err != nil {
 		log.Printf("[%s] Login packet creation failed: %v", routeCfg.VehicleID, err)
@@ -40,6 +124,7 @@ func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSe
 
 	log.Printf("[%s] Login packet sent: %X", routeCfg.VehicleID, loginPacket)
 
+	// Parse source and destination
 	src, err := osrm.ParseCoord(routeCfg.Source)
 	if err != nil {
 		log.Printf("[%s] Invalid source: %v", routeCfg.VehicleID, err)
@@ -51,30 +136,58 @@ func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSe
 		return
 	}
 
+	// Fetch route points
+	start := time.Now()
 	points, err := osrm.GetRoute(baseURL, src, dst)
+	log.Printf("[%s] Route fetch took %v", routeCfg.VehicleID, time.Since(start))
 	if err != nil {
 		log.Printf("[%s] Route fetch failed: %v", routeCfg.VehicleID, err)
 		return
 	}
 
-	state := types.VehicleState{
-		CurrentSpeed: 0.0,
+	// Validate startIndex
+	if startIndex >= len(points) {
+		log.Printf("[%s] Invalid startIndex %d, route has %d points, resetting to 0", routeCfg.VehicleID, startIndex, len(points))
+		startIndex = 0
 	}
 
-	log.Printf("[%s] Starting route with %d points", routeCfg.VehicleID, len(points))
+	log.Printf("[%s] Starting route with %d points from index %d", routeCfg.VehicleID, len(points), startIndex)
 	fmt.Println()
-	// 4. Process route points with position packets
+
+	// Packet template for position updates
 	PacketTemplate := "000000000000009E8E0100000190DA491CD8003DE3607E00C846B4000F00F50C000B0000001F000F00EF0100F001001505004501007100001E00001F4000205600251400272700326500352702F70400F60000FC00000C00B5000E00B60008004235A70018000B00430000004400000024065200280E09002A00FA002B0000003127C700333506000400F10000CD1900C7000001AF00100020E9DC000C000354A6000000000100001CDB"
 
 	// Simulate GPS emission every intervalSec seconds
-	for i, pt := range points {
+	for i := startIndex; i < len(points); i++ {
+		select {
+		case <-ctx.Done():
+			log.Printf("[%s] Simulation cancelled at index %d, reason: %v, saving state", routeCfg.VehicleID, i, ctx.Err())
+			startIndex = i // Save the current index
+			// Save state before exiting
+			if err := progress.SaveVehicleState(routeCfg.VehicleID, &types.VehicleProgress{
+				Source:    routeCfg.Source,
+				Target:    routeCfg.Target,
+				LastLat:   state.LastLat,
+				LastLon:   state.LastLon,
+				Odometer:  state.Odometer,
+				LastIndex: i,
+			}); err != nil {
+				log.Printf("[%s] Failed to save state on exit: %v", routeCfg.VehicleID, err)
+			}
+			log.Printf("[%s] Graceful shutdown complete", routeCfg.VehicleID)
+			return
+		default:
+			// Continue with simulation
+		}
+
+		pt := points[i]
 		stopHit := false
 
 		// Check if current point is a stop location
 		for idx, stop := range routeCfg.Stops {
-
 			stopLatLon, err := osrm.ParseCoord(stop.Location)
 			if err != nil {
+				log.Printf("[%s] Invalid stop location: %v", routeCfg.VehicleID, err)
 				continue
 			}
 
@@ -84,6 +197,15 @@ func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSe
 					routeCfg.VehicleID, pt.Lat, pt.Lon, stop.Duration)
 
 				for wait := 0; wait < stop.Duration; wait += intervalSec {
+					select {
+					case <-ctx.Done():
+						log.Printf("[%s] Simulation cancelled during stop at index %d, reason: %v, saving state", routeCfg.VehicleID, i, ctx.Err())
+						startIndex = i // Save the current index
+						return
+					default:
+						// Continue with stop processing
+					}
+
 					packetHex, err := generatePacket(PacketTemplate, pt.Lat, pt.Lon, 0.0, state.Odometer)
 					if err != nil {
 						log.Printf("[%s] Stop packet generation failed: %v", routeCfg.VehicleID, err)
@@ -103,36 +225,37 @@ func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSe
 
 					time.Sleep(time.Duration(intervalSec) * time.Second)
 				}
-				// Remove the stop from slice so it's not checked again
+				// Remove the stop from slice
 				routeCfg.Stops = append(routeCfg.Stops[:idx], routeCfg.Stops[idx+1:]...)
-
 				stopHit = true
 				break
 			}
 		}
 
-		// If we hit a stop and already sent packets, skip normal processing
 		if stopHit {
+			// Save state after stop
+			if err := progress.SaveVehicleState(routeCfg.VehicleID, &types.VehicleProgress{
+				Source: routeCfg.Source,
+				Target: routeCfg.Target,
+
+				LastLat:   state.LastLat,
+				LastLon:   state.LastLon,
+				Odometer:  state.Odometer,
+				LastIndex: i,
+			}); err != nil {
+				log.Printf("[%s] Failed to save state after stop at index %d: %v", routeCfg.VehicleID, i, err)
+			}
 			continue
 		}
 
 		// Calculate realistic speed
-		if i > 0 {
-			// Calculate distance in meters
+		if i > startIndex || state.LastLat != 0 || state.LastLon != 0 {
 			distance := haversineDistance(state.LastLat, state.LastLon, pt.Lat, pt.Lon) * 1000
-
-			// Calculate speed in km/h (distance / time * 3.6)
-			requiredSpeed := (distance / float64(intervalSec)) * 3.6
-			fmt.Println("req speed", requiredSpeed)
-
 			state.Odometer += distance
-
-			// Generate random speed between 0 and requiredSpeed
-			// randomSpeed := rand.Float64() * requiredSpeed
-
-			// state.CurrentSpeed = randomSpeed + 1
-			state.CurrentSpeed = requiredSpeed
-
+			state.CurrentSpeed = (distance / float64(intervalSec)) * 3.6
+			if maxSpeed < state.CurrentSpeed {
+				state.CurrentSpeed = 80
+			}
 			log.Printf("[%s] Speed: %.1f km/h (Distance: %.2f m, Interval: %ds)",
 				routeCfg.VehicleID, state.CurrentSpeed, distance, intervalSec)
 		}
@@ -141,28 +264,38 @@ func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSe
 		state.LastLat = pt.Lat
 		state.LastLon = pt.Lon
 
-		log.Printf("[%s] Point %d: %.6f, %.6f", routeCfg.VehicleID, i+1, pt.Lat, pt.Lon)
-		fmt.Println()
-		// Generate position packet with current timestamp and coordinates
+		// Save state after each point
+		if err := progress.SaveVehicleState(routeCfg.VehicleID, &types.VehicleProgress{
+			Source: routeCfg.Source,
+			Target: routeCfg.Target,
+
+			LastLat:   state.LastLat,
+			LastLon:   state.LastLon,
+			Odometer:  state.Odometer,
+			LastIndex: i,
+		}); err != nil {
+			log.Printf("[%s] Failed to save state after point %d: %v", routeCfg.VehicleID, i+1, err)
+		}
+
+		// Generate and send position packet
 		positionPacketHex, err := generatePacket(PacketTemplate, pt.Lat, pt.Lon, state.CurrentSpeed, state.Odometer)
 		if err != nil {
 			log.Printf("[%s] Position packet generation failed: %v", routeCfg.VehicleID, err)
 			continue
 		}
 
-		// Convert hex string to bytes
 		positionPacketBytes, err := hex.DecodeString(positionPacketHex)
 		if err != nil {
 			log.Printf("[%s] Hex decode failed: %v", routeCfg.VehicleID, err)
 			continue
 		}
 
-		// Send position packet
 		if _, err := conn.Write(positionPacketBytes); err != nil {
 			log.Printf("[%s] Position packet send failed: %v", routeCfg.VehicleID, err)
 			continue
 		}
-		// fmt.Println("the packet is", string(positionPacketHex))
+
+		log.Printf("[%s] Point %d: %.6f, %.6f, Packet: %s", routeCfg.VehicleID, i+1, pt.Lat, pt.Lon, positionPacketHex)
 		time.Sleep(time.Duration(intervalSec) * time.Second)
 	}
 

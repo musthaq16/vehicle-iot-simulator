@@ -15,9 +15,10 @@ type Coordinate struct {
 }
 
 type VehicleProgress struct {
-	LastLat  float64 `json:"last_lat"`
-	LastLon  float64 `json:"last_lon"`
-	Odometer float64 `json:"odometer"`
-	Source   string  `json:"source"`
-	Target   string  `json:"target"`
+	LastLat   float64 `json:"last_lat"`
+	LastLon   float64 `json:"last_lon"`
+	Odometer  float64 `json:"odometer"`
+	Source    string  `json:"source"`
+	Target    string  `json:"target"`
+	LastIndex int     `json:"last_index"`
 }

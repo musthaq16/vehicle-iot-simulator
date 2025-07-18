@@ -9,11 +9,11 @@ osrm:
 routes:
   - vehicle_id: "veh-0001"
     imei: "356307042441013"
-    source: "12.93485,80.125984"
-    target: "12.963377700364212,80.14735635315704"
+    source: "12.935,80.1284"
+    target: "12.960364212,80.147704"
     stops:
       - location: "12.933881,80.125154"      
-        duration: 100   # in seconds
+        duration: 10   # in seconds
       - location: "12.955000,80.140000"
         duration: 60    # in seconds
       # - location: "12.960000,80.145000"

@@ -1,9 +1,13 @@
-package state
+package progress
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/musthaq16/vehicle-iot-simulator/types"
 )
@@ -36,4 +40,19 @@ func SaveVehicleState(vehicleID string, state *types.VehicleProgress) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// WithSignalHandler creates a context that cancels on OS signals
+func WithSignalHandler(ctx context.Context) context.Context {
+	ctx, cancel := context.WithCancel(ctx)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived termination signal, saving state...")
+		cancel()
+	}()
+
+	return ctx
 }
