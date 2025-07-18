@@ -14,7 +14,6 @@ import (
 	"github.com/musthaq16/vehicle-iot-simulator/types"
 )
 
-
 // RunVehicleSimulator simulates a single vehicle sending coordinates
 func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSec int, address string) {
 
@@ -69,6 +68,53 @@ func RunVehicleSimulator(baseURL string, routeCfg config.RouteConfig, intervalSe
 
 	// Simulate GPS emission every intervalSec seconds
 	for i, pt := range points {
+		stopHit := false
+
+		// Check if current point is a stop location
+		for idx, stop := range routeCfg.Stops {
+
+			stopLatLon, err := osrm.ParseCoord(stop.Location)
+			if err != nil {
+				continue
+			}
+
+			dist := haversineDistance(pt.Lat, pt.Lon, stopLatLon.Lat, stopLatLon.Lon)
+			if dist == 0 { // 50 meters threshold
+				log.Printf("[%s] Stop hit at (%.6f, %.6f), pausing %d seconds",
+					routeCfg.VehicleID, pt.Lat, pt.Lon, stop.Duration)
+
+				for wait := 0; wait < stop.Duration; wait += intervalSec {
+					packetHex, err := generatePacket(PacketTemplate, pt.Lat, pt.Lon, 0.0, state.Odometer)
+					if err != nil {
+						log.Printf("[%s] Stop packet generation failed: %v", routeCfg.VehicleID, err)
+						break
+					}
+
+					packetBytes, err := hex.DecodeString(packetHex)
+					if err != nil {
+						log.Printf("[%s] Hex decode failed during stop: %v", routeCfg.VehicleID, err)
+						break
+					}
+
+					if _, err := conn.Write(packetBytes); err != nil {
+						log.Printf("[%s] Stop packet send failed: %v", routeCfg.VehicleID, err)
+						break
+					}
+
+					time.Sleep(time.Duration(intervalSec) * time.Second)
+				}
+				// Remove the stop from slice so it's not checked again
+				routeCfg.Stops = append(routeCfg.Stops[:idx], routeCfg.Stops[idx+1:]...)
+
+				stopHit = true
+				break
+			}
+		}
+
+		// If we hit a stop and already sent packets, skip normal processing
+		if stopHit {
+			continue
+		}
 
 		// Calculate realistic speed
 		if i > 0 {

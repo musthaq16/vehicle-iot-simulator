@@ -15,10 +15,16 @@ var (
 
 // RouteConfig defines a route between source and target
 type RouteConfig struct {
-	VehicleID string `mapstructure:"vehicle_id"`
-	Imei      string `mapstructure:"imei"`
-	Source    string `mapstructure:"source"` // "lat,lon"
-	Target    string `mapstructure:"target"` // "lat,lon"
+	VehicleID string       `mapstructure:"vehicle_id"`
+	Imei      string       `mapstructure:"imei"`
+	Source    string       `mapstructure:"source"` // "lat,lon"
+	Target    string       `mapstructure:"target"` // "lat,lon"
+	Stops     []StopConfig `mapstructure:"stops"`
+}
+
+type StopConfig struct {
+	Location string `yaml:"location"`
+	Duration int    `yaml:"duration"` // seconds
 }
 
 // SimulatorConfig contains frequency and concurrency

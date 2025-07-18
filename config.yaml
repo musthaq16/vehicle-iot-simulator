@@ -9,9 +9,16 @@ osrm:
 routes:
   - vehicle_id: "veh-0001"
     imei: "356307042441013"
-    source: "12.934853743726048,80.12598451188441"   # Bangalore
-    target: "12.963377700364212, 80.14735635315704"   # Chennai
+    source: "12.93485,80.125984"
+    target: "12.963377700364212,80.14735635315704"
+    stops:
+      - location: "12.933881,80.125154"      
+        duration: 100   # in seconds
+      - location: "12.955000,80.140000"
+        duration: 60    # in seconds
+      # - location: "12.960000,80.145000"
+      #   duration: 120   # in seconds
   # - vehicle_id: "veh-0002"
-  #   imei: ""
+  #   imei: "356307042441014"
   #   source: "28.6139,77.2090"   # Delhi
   #   target: "26.9124,75.7873"   # Jaipur
